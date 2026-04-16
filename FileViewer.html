@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+    
+    .container {
+      background: white;
+      border-radius: 10px;
+      padding: 25px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    
+    .title {
+      font-size: 20px;
+      color: #333;
+      font-weight: 600;
+    }
+    
+    .cell-info {
+      background: #fff3cd;
+      color: #856404;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
+    
+    .file-grid {
+      display: grid;
+      gap: 15px;
+      max-height: 400px;
+      overflow-y: auto;
+      padding-right: 10px;
+    }
+    
+    .file-card {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 15px;
+      display: flex;
+      align-items: center;
+      transition: all 0.3s ease;
+    }
+    
+    .file-card:hover {
+      background: #e9ecef;
+      border-color: #adb5bd;
+      transform: translateX(5px);
+    }
+    
+    .file-icon {
+      font-size: 36px;
+      margin-right: 15px;
+      flex-shrink: 0;
+    }
+    
+    .file-info {
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .file-name {
+      font-weight: 600;
+      color: #212529;
+      margin-bottom: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    
+    .file-meta {
+      font-size: 12px;
+      color: #6c757d;
+    }
+    
+    .file-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    
+    .action-btn {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-weight: 500;
+    }
+    
+    .btn-view {
+      background: #007bff;
+      color: white;
+    }
+    
+    .btn-view:hover {
+      background: #0056b3;
+    }
+    
+    .btn-download {
+      background: #28a745;
+      color: white;
+    }
+    
+    .btn-download:hover {
+      background: #218838;
+    }
+    
+    .btn-delete {
+      background: #dc3545;
+      color: white;
+    }
+    
+    .btn-delete:hover {
+      background: #c82333;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #6c757d;
+    }
+    
+    .empty-icon {
+      font-size: 64px;
+      margin-bottom: 15px;
+    }
+    
+    .bottom-actions {
+      margin-top: 20px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .file-count {
+      font-size: 14px;
+      color: #6c757d;
+    }
+    
+    .close-btn {
+      background: #6c757d;
+      color: white;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    
+    .close-btn:hover {
+      background: #5a6268;
+    }
+    
+    /* 스크롤바 스타일 */
+    .file-grid::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .file-grid::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+    
+    .file-grid::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 4px;
+    }
+    
+    .file-grid::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2 class="title">📁 첨부파일 목록</h2>
+      <span class="cell-info"><?= cellLocation ?></span>
+    </div>
+    
+    <? if (attachments && attachments.length > 0) { ?>
+      <div class="file-grid">
+        <? for (let i = 0; i < attachments.length; i++) { ?>
+          <div class="file-card">
+            <div class="file-icon"><?= attachments[i].icon || '📎' ?></div>
+            <div class="file-info">
+              <div class="file-name"><?= attachments[i].fileName ?></div>
+              <div class="file-meta">
+                <?= new Date(attachments[i].uploadDate).toLocaleString('ko-KR') ?>
+                <? if (attachments[i].fileSize) { ?>
+                  • <?= formatFileSize(attachments[i].fileSize) ?>
+                <? } ?>
+              </div>
+            </div>
+            <div class="file-actions">
+              <button class="action-btn btn-view" onclick="viewFile('<?= attachments[i].fileId ?>')">
+                👁️ 보기
+              </button>
+              <button class="action-btn btn-download" onclick="downloadFile('<?= attachments[i].fileId ?>', '<?= attachments[i].fileName ?>')">
+                💾 다운로드
+              </button>
+              <button class="action-btn btn-delete" onclick="deleteFile('<?= attachments[i].fileId ?>', '<?= attachments[i].fileName ?>')">
+                🗑️ 삭제
+              </button>
+            </div>
+          </div>
+        <? } ?>
+      </div>
+      
+      <div class="bottom-actions">
+        <span class="file-count">총 <?= attachments.length ?>개의 파일</span>
+        <button class="close-btn" onclick="google.script.host.close()">닫기</button>
+      </div>
+    <? } else { ?>
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <p>첨부된 파일이 없습니다</p>
+      </div>
+      
+      <div class="bottom-actions">
+        <span></span>
+        <button class="close-btn" onclick="google.script.host.close()">닫기</button>
+      </div>
+    <? } ?>
+  </div>
+  
+  <script>
+    function formatFileSize(bytes) {
+      if (!bytes || bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+    
+    function viewFile(fileId) {
+      google.script.run
+        .withSuccessHandler(function() {
+          // 파일 뷰어가 열림
+        })
+        .withFailureHandler(function(error) {
+          alert('파일을 열 수 없습니다: ' + error);
+        })
+        .viewSingleFile(fileId);
+    }
+    
+    function downloadFile(fileId, fileName) {
+      google.script.run
+        .withSuccessHandler(function(fileInfo) {
+          if (fileInfo && fileInfo.downloadUrl) {
+            window.open(fileInfo.downloadUrl, '_blank');
+          }
+        })
+        .withFailureHandler(function(error) {
+          alert('다운로드 링크를 가져올 수 없습니다: ' + error);
+        })
+        .getFileInfo(fileId);
+    }
+    
+    function deleteFile(fileId, fileName) {
+      if (confirm(`"${fileName}" 파일을 삭제하시겠습니까?`)) {
+        google.script.run
+          .withSuccessHandler(function(success) {
+            if (success) {
+              alert('파일이 삭제되었습니다.');
+              google.script.host.close();
+            } else {
+              alert('파일 삭제에 실패했습니다.');
+            }
+          })
+          .withFailureHandler(function(error) {
+            alert('오류: ' + error);
+          })
+          .deleteSingleFile(fileId, '<?= cellLocation ?>');
+      }
+    }
+  </script>
+</body>
+</html>

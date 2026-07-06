@@ -1,7 +1,7 @@
 // ===== 메인 스크립트 파일 (Code.gs) : 최종 완성본 =====
 
 // 전역 변수
-const INVOICE_FOLDER_NAME = '스프레드시트_첨부서류';
+const SHARED_DRIVE_FOLDER_ID = '1IxjWPKJaNEkWAZyc6DxqDZvDdoK_QppD'; // 공유드라이브 첨부파일 폴더
 const ARCHIVE_SUBFOLDER_NAME = '보관함';
 
 // 1. 스프레드시트 열 때 실행
@@ -15,6 +15,9 @@ function onOpen() {
     .addItem('🗑️ 첨부파일 완전 삭제', 'deleteAttachmentsPermanently')
     .addSeparator()
     .addItem('📁 첨부파일 폴더 열기', 'openAttachmentFolder')
+    .addItem('🔗 저장 폴더 ID 변경', 'changeAttachmentFolderId')
+    .addItem('🔄 첨부파일 위치 동기화', 'manualSync')
+    .addItem('⚙️ 자동 동기화 트리거 설정', 'setupChangeTrigger')
     .addToUi();
   
   try { if (typeof addUnpaidMenu === 'function') addUnpaidMenu(); } catch (e) {}
@@ -32,21 +35,29 @@ function showAttachmentDialog() {
   }
 }
 
-// 3. 파일 업로드 처리 (권한 강제 설정 포함)
+// 3. 파일 업로드 처리 (시트명/열헤더 기반 폴더 구조)
 function attachFile(base64Data, fileName, mimeType, rowOffset) {
   try {
     const sheet = SpreadsheetApp.getActiveSheet();
     const cell = sheet.getActiveCell().offset(rowOffset || 0, 0);
     const cellA1 = cell.getA1Notation();
     
-    const folderId = getOrInitFolderId();
-    const folder = DriveApp.getFolderById(folderId);
+    // 저장할 폴더 결정 (시트명/열헤더 구조)
+    const folder = getTargetFolder(sheet, cell);
     
-    const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType, fileName);
+    // 폴더 내 파일 수를 세어 다음 번호 부여
+    const nextNumber = getNextFileNumber(folder);
+    const numberedFileName = nextNumber + '. ' + fileName;
+    
+    const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType, numberedFileName);
     const file = folder.createFile(blob);
     
-    // [중요] 파일별 권한 강제 설정 (액세스 오류 방지)
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    // [참고] 공유드라이브는 드라이브 레벨에서 권한이 관리되므로 개별 설정은 건너뜀
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (e) {
+      console.log('공유드라이브 파일 - 개별 권한 설정 건너뜀: ' + e.message);
+    }
     
     // 아이콘 설정
     let icon = '📎';
@@ -74,7 +85,18 @@ function attachFile(base64Data, fileName, mimeType, rowOffset) {
     userProperties.setProperty(key, JSON.stringify(attachments));
     updateCellDisplay(cell, attachments);
     
-    return { success: true, message: '업로드 완료', fileCount: attachments.length };
+    // 저장 경로 안내 메시지
+    const sheetName = sheet.getName();
+    const colHeader = getColumnHeader(sheet, cell.getColumn());
+    let pathMsg;
+    if (sheetName === '목차') {
+      const companyName = String(sheet.getRange(cell.getRow(), 4).getValue() || '').trim();
+      pathMsg = companyName ? `${companyName}/${colHeader}` : '루트 폴더';
+    } else {
+      pathMsg = `${sheetName}/${colHeader}`;
+    }
+    
+    return { success: true, message: `업로드 완료 (${pathMsg})`, fileCount: attachments.length };
     
   } catch (error) {
     console.error(error);
@@ -393,18 +415,200 @@ function onEdit(e) {
 }
 
 function getOrInitFolderId() {
-  const props = PropertiesService.getScriptProperties();
-  const savedId = props.getProperty('INVOICE_FOLDER_ID');
-  if (savedId) { try { DriveApp.getFolderById(savedId); return savedId; } catch (e) {} }
-  const folders = DriveApp.getFoldersByName(INVOICE_FOLDER_NAME);
-  let folder;
-  if (folders.hasNext()) folder = folders.next();
-  else {
-    folder = DriveApp.createFolder(INVOICE_FOLDER_NAME);
-    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  // ScriptProperties에 저장된 커스텀 폴더 ID 우선 사용
+  const customId = PropertiesService.getScriptProperties().getProperty('ATTACHMENT_FOLDER_ID');
+  const folderId = customId || SHARED_DRIVE_FOLDER_ID;
+  
+  try {
+    DriveApp.getFolderById(folderId);
+    return folderId;
+  } catch (e) {
+    throw new Error('첨부파일 폴더에 접근할 수 없습니다. 폴더 ID를 확인하세요: ' + folderId);
   }
-  props.setProperty('INVOICE_FOLDER_ID', folder.getId());
-  return folder.getId();
+}
+
+/**
+ * 첨부파일 저장 폴더 ID 변경
+ * 메뉴에서 호출하여 새로운 구글 드라이브 폴더 ID를 설정
+ */
+function changeAttachmentFolderId() {
+  const ui = SpreadsheetApp.getUi();
+  const scriptProps = PropertiesService.getScriptProperties();
+  
+  // 현재 사용 중인 폴더 ID 표시
+  const currentCustomId = scriptProps.getProperty('ATTACHMENT_FOLDER_ID');
+  const currentId = currentCustomId || SHARED_DRIVE_FOLDER_ID;
+  const isCustom = currentCustomId ? '(사용자 설정)' : '(기본값)';
+  
+  let currentFolderName = '';
+  try {
+    currentFolderName = DriveApp.getFolderById(currentId).getName();
+  } catch (e) {
+    currentFolderName = '(접근 불가)';
+  }
+  
+  const response = ui.prompt(
+    '🔗 저장 폴더 ID 변경',
+    `현재 폴더: ${currentFolderName} ${isCustom}\n` +
+    `현재 ID: ${currentId}\n\n` +
+    '폴더 ID 또는 드라이브 URL을 입력하세요.\n' +
+    '(예: https://drive.google.com/drive/folders/폴더ID)\n' +
+    '(빈칸 입력 시 기본값으로 복원)',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const rawInput = response.getResponseText().trim();
+  
+  // 빈칸 입력 시 기본값 복원
+  if (!rawInput) {
+    scriptProps.deleteProperty('ATTACHMENT_FOLDER_ID');
+    ui.alert('✅ 복원 완료', '기본 폴더로 복원되었습니다.\nID: ' + SHARED_DRIVE_FOLDER_ID, ui.ButtonSet.OK);
+    return;
+  }
+  
+  // URL에서 폴더 ID 추출 (URL이 아니면 입력값 그대로 사용)
+  const newId = extractFolderIdFromInput(rawInput);
+  
+  // 새 폴더 ID 검증
+  try {
+    const folder = DriveApp.getFolderById(newId);
+    const folderName = folder.getName();
+    
+    // 확인 다이얼로그
+    const confirm = ui.alert(
+      '📁 폴더 확인',
+      `폴더명: ${folderName}\n추출된 ID: ${newId}\n\n이 폴더로 변경하시겠습니까?`,
+      ui.ButtonSet.YES_NO
+    );
+    
+    if (confirm === ui.Button.YES) {
+      scriptProps.setProperty('ATTACHMENT_FOLDER_ID', newId);
+      ui.alert('✅ 변경 완료', `저장 폴더가 변경되었습니다.\n폴더명: ${folderName}`, ui.ButtonSet.OK);
+    }
+  } catch (e) {
+    ui.alert('❌ 오류', '해당 폴더에 접근할 수 없습니다.\n입력값을 다시 확인하세요.\n\n입력값: ' + rawInput + '\n추출된 ID: ' + newId, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * 입력값에서 구글 드라이브 폴더 ID 추출
+ * - URL 형태: https://drive.google.com/drive/folders/폴더ID?usp=... → 폴더ID 추출
+ * - ID만 입력: 그대로 반환
+ */
+function extractFolderIdFromInput(input) {
+  if (!input) return '';
+  
+  // URL 패턴: /folders/ 뒤의 ID 추출 (? 또는 / 이전까지)
+  const urlMatch = input.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (urlMatch) {
+    console.log('URL에서 폴더 ID 추출: ' + urlMatch[1]);
+    return urlMatch[1];
+  }
+  
+  // URL이 아니면 입력값 그대로 반환 (ID로 간주)
+  return input;
+}
+
+/**
+ * 열 번호로 폴더명 결정
+ * 목차 시트: L(12)=계약서, M(13)=견적서_내역서, N(14)=사업자등록증, O(15)=통장사본
+ * 기타 시트: H(8)=입금증, O(15)=계산서(청구서)
+ */
+function getColumnHeader(sheet, colIndex) {
+  const col = Number(colIndex);
+  const sheetName = sheet.getName();
+  console.log(`getColumnHeader 호출 - 시트: ${sheetName}, colIndex: ${col}`);
+  
+  // === 목차 시트 열 매핑 ===
+  if (sheetName === '목차') {
+    if (col === 12) return '계약서';              // L열
+    if (col === 13) return '견적서_내역서';        // M열
+    if (col === 14) return '사업자등록증';          // N열
+    if (col === 15) return '통장사본';              // O열
+  }
+  
+  // === 기타 시트 열 매핑 ===
+  if (col === 8) return '입금증';                  // H열
+  if (col === 15) return '계산서(청구서)';          // O열
+  
+  // 그 외 열은 1행 헤더값 시도
+  const headerValue = String(sheet.getRange(1, col).getValue() || '').trim();
+  if (headerValue) {
+    console.log('헤더값 사용 → ' + headerValue);
+    return headerValue;
+  }
+  
+  // 헤더도 없으면 열 문자 사용
+  const colLetter = String.fromCharCode(64 + col);
+  console.log('폴백 사용 → ' + colLetter + '열');
+  return colLetter + '열';
+}
+
+/**
+ * 첨부파일 저장 대상 폴더 결정
+ * - 목차 시트: 공유드라이브/D열 업체명/문서종류/ 구조로 저장
+ * - 그 외 시트: 공유드라이브/시트명/열헤더명/ 구조로 저장
+ */
+function getTargetFolder(sheet, cell) {
+  const rootFolder = DriveApp.getFolderById(getOrInitFolderId());
+  const sheetName = sheet.getName();
+  
+  if (sheetName === '목차') {
+    // D열(4번째)에서 업체명 가져오기
+    const companyName = String(sheet.getRange(cell.getRow(), 4).getValue() || '').trim();
+    if (!companyName) {
+      console.log('목차 시트 - D열 업체명 없음, 루트 폴더에 저장');
+      return rootFolder;
+    }
+    
+    // 1단계: 업체명 폴더 (예: 만방토건)
+    const companyFolder = getOrCreateSubFolder(rootFolder, companyName);
+    
+    // 2단계: 문서종류 폴더 (예: 계약서, 견적서_내역서)
+    const docType = getColumnHeader(sheet, cell.getColumn());
+    const docFolder = getOrCreateSubFolder(companyFolder, docType);
+    
+    console.log(`저장 경로: ${companyName}/${docType}`);
+    return docFolder;
+  }
+  
+  // 기타 시트: 시트명/열헤더 구조
+  // 1단계: 시트명 폴더 (예: 만방토건)
+  const sheetFolder = getOrCreateSubFolder(rootFolder, sheetName);
+  
+  // 2단계: 열 헤더명 폴더 (예: 입금증, 계산서(청구서))
+  const colHeader = getColumnHeader(sheet, cell.getColumn());
+  const headerFolder = getOrCreateSubFolder(sheetFolder, colHeader);
+  
+  console.log(`저장 경로: ${sheetName}/${colHeader}`);
+  return headerFolder;
+}
+
+/**
+ * 폴더 내 파일 수를 세어 다음 번호 반환
+ */
+function getNextFileNumber(folder) {
+  const files = folder.getFiles();
+  let count = 0;
+  while (files.hasNext()) {
+    files.next();
+    count++;
+  }
+  return count + 1;
+}
+
+/**
+ * 하위 폴더를 찾거나 없으면 생성
+ */
+function getOrCreateSubFolder(parentFolder, folderName) {
+  const folders = parentFolder.getFoldersByName(folderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  console.log(`새 폴더 생성: ${folderName}`);
+  return parentFolder.createFolder(folderName);
 }
 
 function getOrInitArchiveFolder() {
@@ -413,4 +617,177 @@ function getOrInitArchiveFolder() {
   const folders = mainFolder.getFoldersByName(ARCHIVE_SUBFOLDER_NAME);
   if (folders.hasNext()) return folders.next();
   return mainFolder.createFolder(ARCHIVE_SUBFOLDER_NAME);
+}
+
+// ===== 첨부파일 위치 동기화 =====
+
+/**
+ * onChange 트리거 핸들러
+ * 행/열 삽입·삭제 시 자동으로 첨부파일 위치를 동기화
+ */
+function onSheetChange(e) {
+  if (!e) return;
+  // 구조 변경(행/열 삽입·삭제)만 처리
+  const structuralChanges = ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN'];
+  if (!structuralChanges.includes(e.changeType)) return;
+  
+  console.log('구조 변경 감지: ' + e.changeType);
+  try {
+    const moved = syncAttachmentPositions();
+    console.log(`동기화 완료: ${moved}개 항목 이동`);
+  } catch (err) {
+    console.error('동기화 오류: ' + err.toString());
+  }
+}
+
+/**
+ * 수동 동기화 (메뉴에서 호출)
+ */
+function manualSync() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const moved = syncAttachmentPositions();
+    if (moved > 0) {
+      ui.alert('✅ 동기화 완료', `${moved}개 첨부파일 위치가 갱신되었습니다.`, ui.ButtonSet.OK);
+    } else {
+      ui.alert('✅ 동기화 완료', '모든 첨부파일 위치가 정상입니다.', ui.ButtonSet.OK);
+    }
+  } catch (err) {
+    ui.alert('❌ 오류', err.toString(), ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * 핵심: 첨부파일 위치 동기화
+ * 셀의 하이퍼링크/리치텍스트에서 fileId를 추출하여
+ * Properties 키를 현재 셀 위치로 갱신
+ */
+function syncAttachmentPositions() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = spreadsheet.getSheets();
+  const props = PropertiesService.getUserProperties();
+  const allProps = props.getProperties();
+  let movedCount = 0;
+  
+  sheets.forEach(sheet => {
+    const sheetId = sheet.getSheetId();
+    const prefix = sheetId + '_';
+    
+    // 이 시트의 기존 Properties에서 fileId → 옛 키 매핑
+    const fileIdToOldKey = {};
+    
+    Object.keys(allProps).forEach(key => {
+      if (!key.startsWith(prefix)) return;
+      try {
+        const attachments = JSON.parse(allProps[key]);
+        attachments.forEach(att => {
+          fileIdToOldKey[att.fileId] = key;
+        });
+      } catch (e) {}
+    });
+    
+    // 이 시트에 첨부파일이 없으면 건너뛰기
+    if (Object.keys(fileIdToOldKey).length === 0) return;
+    
+    const dataRange = sheet.getDataRange();
+    const formulas = dataRange.getFormulas();
+    const notes = dataRange.getNotes();
+    const numRows = dataRange.getNumRows();
+    const numCols = dataRange.getNumColumns();
+    
+    // 셀 스캔: fileId → 현재 셀 위치 매핑
+    const fileIdToNewKey = {};
+    
+    for (let i = 0; i < numRows; i++) {
+      for (let j = 0; j < numCols; j++) {
+        const formula = formulas[i][j];
+        const note = notes[i][j];
+        
+        // 첨부파일이 없는 셀은 건너뛰기
+        if (!formula && (!note || !note.includes('📎'))) continue;
+        
+        const cellA1 = sheet.getRange(i + 1, j + 1).getA1Notation();
+        const newKey = prefix + cellA1;
+        
+        // 1) 단일 파일: HYPERLINK 수식에서 fileId 추출
+        if (formula && formula.includes('drive.google.com/file/d/')) {
+          const match = formula.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+          if (match && fileIdToOldKey[match[1]]) {
+            fileIdToNewKey[match[1]] = newKey;
+          }
+        }
+        
+        // 2) 복수 파일: 리치텍스트에서 fileId 추출
+        if (note && note.includes('📎') && !formula.includes('drive.google.com')) {
+          try {
+            const richText = sheet.getRange(i + 1, j + 1).getRichTextValue();
+            if (richText) {
+              const runs = richText.getRuns();
+              for (let r = 0; r < runs.length; r++) {
+                const url = runs[r].getLinkUrl();
+                if (url && url.includes('drive.google.com/file/d/')) {
+                  const match = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+                  if (match && fileIdToOldKey[match[1]]) {
+                    fileIdToNewKey[match[1]] = newKey;
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    
+    // Properties 키 갱신 (옛 키 → 새 키)
+    const processedOldKeys = new Set();
+    
+    Object.keys(fileIdToNewKey).forEach(fileId => {
+      const oldKey = fileIdToOldKey[fileId];
+      const newKey = fileIdToNewKey[fileId];
+      
+      if (oldKey && oldKey !== newKey && !processedOldKeys.has(oldKey)) {
+        processedOldKeys.add(oldKey);
+        const data = props.getProperty(oldKey);
+        if (data) {
+          props.deleteProperty(oldKey);
+          props.setProperty(newKey, data);
+          movedCount++;
+          console.log(`위치 이동: ${oldKey.replace(prefix, '')} → ${newKey.replace(prefix, '')}`);
+        }
+      }
+    });
+  });
+  
+  return movedCount;
+}
+
+/**
+ * onChange 트리거 설치 (최초 1회만 실행)
+ * Apps Script 편집기에서 이 함수를 한 번 실행하세요
+ */
+function setupChangeTrigger() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // 기존 onChange 트리거 제거
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  triggers.forEach(trigger => {
+    if (trigger.getEventType() === ScriptApp.EventType.ON_CHANGE) {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  });
+  
+  // 새 onChange 트리거 설치
+  ScriptApp.newTrigger('onSheetChange')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onChange()
+    .create();
+  
+  ui.alert(
+    '✅ 트리거 설정 완료',
+    '행 삽입/삭제 시 첨부파일 위치가 자동으로 동기화됩니다.\n\n' +
+    (removed > 0 ? `(기존 트리거 ${removed}개 제거 후 재설치)` : ''),
+    ui.ButtonSet.OK
+  );
 }

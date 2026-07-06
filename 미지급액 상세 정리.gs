@@ -71,8 +71,8 @@ function createFinalUnpaidReport() {
     .setFontColor('#ffffff')
     .setBorder(true, true, true, true, true, true);
   
-  // 메인 시트 데이터 읽기 - A1:K80 범위로 지정
-  const dataRange = mainSheet.getRange('A1:K90');
+  // 메인 시트 데이터 읽기 - A1:L90 범위로 지정 (J열 추가로 범위 확장)
+  const dataRange = mainSheet.getRange('A1:L90');
   const values = dataRange.getValues();
   
   const allUnpaidItems = [];
@@ -185,8 +185,8 @@ function createFinalUnpaidReport() {
       // 구분 결정 - 대분류 사용
       const category = lastMainCategory || '기타';
       
-      // J열(발행금액)과 H열(지급액) 읽기
-      let invoiceAmount = parseFloat(row[9]) || 0; // J열 - 계산서 발행금액(청구금액)
+      // K열(발행금액)과 H열(지급액) 읽기 (J열에 미지급금액(계약금) 추가로 한 칸 밀림)
+      let invoiceAmount = parseFloat(row[10]) || 0; // K열 - 계산서 발행금액(청구금액)
       let paidAmount = parseFloat(row[7]) || 0; // H열 - 지급액
       let calculatedUnpaid = invoiceAmount - paidAmount; // 미지급액 재계산
       
@@ -831,7 +831,7 @@ function showQuickSummary() {
     mainSheet = spreadsheet.getActiveSheet();
   }
   
-  const dataRange = mainSheet.getRange('A1:K80');
+  const dataRange = mainSheet.getRange('A1:L80');
   const values = dataRange.getValues();
   
   let unpaidCount = 0;
